@@ -1,7 +1,4 @@
-Voici le fichier **README.md** complet et prêt à l'emploi pour votre projet `fsac-scolarite-app`.  
-Il est clair, structuré et guide parfaitement toute personne qui souhaite installer et utiliser l'application chez elle.
 
-```markdown
 # fsac-scolarite-app
 
 **Application interne Streamlit** pour le **Service Scolarité** de la **Faculté des Sciences Aïn Chock (FSAC)**.
