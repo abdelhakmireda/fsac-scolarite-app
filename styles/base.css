@@ -1,0 +1,139 @@
+/* Hide streamlit top bar */
+[data-testid="stHeader"]{ display:none !important; }
+[data-testid="stToolbar"]{ display:none !important; }
+#MainMenu{ visibility:hidden; }
+footer{ visibility:hidden; }
+
+/* Background */
+[data-testid="stAppViewContainer"]{
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%) !important;
+  color: var(--text) !important;
+}
+[data-testid="stAppViewContainer"]::before{
+  content:"";
+  position: fixed;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  filter: blur(1px);
+  pointer-events:none;
+  z-index:0;
+}
+
+/* Content */
+.block-container{
+  position:relative;
+  z-index:1;
+  padding-top: 5.0rem;
+}
+
+/* Navbar */
+.navbar{
+  position: fixed;
+  top:0; left:0; right:0;
+  z-index: 9999;
+  background: var(--surface);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.navbar-inner{
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0.75rem 1.1rem;
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+}
+.brand{
+  font-weight: 900;
+  letter-spacing: .2px;
+  color: var(--text);
+}
+.brand-sub{
+  opacity:.70;
+  font-size:.9rem;
+  color: var(--muted);
+}
+.user-pill{
+  display:flex;
+  align-items:center;
+  gap:.5rem;
+  padding:.35rem .65rem;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background: rgba(255,255,255,0.10);
+  color: var(--text);
+}
+.user-dot{
+  width:8px; height:8px;
+  border-radius:99px;
+  background:#22c55e;
+}
+.nav-actions{
+  position: fixed;
+  top: 0.72rem;
+  right: 1.1rem;
+  z-index: 10000;
+}
+
+/* Cards */
+.card{
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 22px;
+  padding: 1rem 1.1rem;
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+.card-title{ font-weight: 800; opacity:.95; }
+.card-sub{ color: var(--muted); font-size:.92rem; }
+
+/* Sidebar */
+[data-testid="stSidebar"]{
+  background: var(--surface2) !important;
+  border-right: 1px solid var(--border);
+}
+.sidebar-card{
+  border: 1px solid var(--border);
+  background: var(--card2);
+  border-radius: 18px;
+  padding: .85rem .9rem;
+}
+
+/* Remove radio label spacing */
+[data-testid="stSidebar"] .stRadio > label{ display:none !important; }
+
+/* Sidebar menu style */
+[data-testid="stSidebar"] div[role="radiogroup"] label{
+  padding: .55rem .7rem;
+  border-radius: 14px;
+  border:1px solid var(--border);
+  margin-bottom: .35rem;
+  background: rgba(255,255,255,0.10);
+  color: var(--text);
+}
+[data-testid="stSidebar"] div[role="radiogroup"] label:hover{
+  border-color: rgba(255,70,70,0.35);
+}
+
+/* Buttons */
+div.stButton > button{
+  border-radius: 14px !important;
+  padding: .55rem .85rem !important;
+  border: 1px solid var(--border) !important;
+  background: rgba(255,255,255,0.10) !important;
+  color: var(--text) !important;
+}
+div.stButton > button[kind="primary"]{
+  background: var(--accent) !important;
+  color: white !important;
+  border: 1px solid var(--accentBorder) !important;
+}
+
+/* Inputs */
+[data-testid="stTextInput"] input{
+  border-radius: 14px !important;
+  background: var(--inputBg) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+}

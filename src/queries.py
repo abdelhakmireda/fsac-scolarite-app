@@ -1,0 +1,104 @@
+SQL_PARCOURS_TEMPLATE = """
+WITH ModulesAvecSemestre AS (
+    SELECT
+        ind.COD_ETU                 AS code_etudiant,
+        ind.LIB_NOM_PAT_IND         AS nom_famille,
+        ind.LIB_PR1_IND             AS prenom,
+        ind.DATE_NAI_IND            AS date_naissance,
+        ind.CIN_IND                 AS cin,
+        re.COD_ANU                  AS annee_universitaire,
+        re.COD_ELP,
+        ep.LIB_ELP,
+        SUBSTR(re.COD_ELP, 5, 1)    AS num_semestre,
+
+        CASE
+            WHEN SUM(CASE WHEN re.NOT_SUB_ELP IS NOT NULL THEN 1 ELSE 0 END) > 0
+            THEN MAX(re.NOT_SUB_ELP)
+            ELSE TO_CHAR(MAX(re.NOT_ELP))
+        END AS note_affichee,
+
+        MAX(re.COD_TRE) AS cod_tre
+
+    FROM RESULTAT_ELP re
+    JOIN ELEMENT_PEDAGOGI ep
+        ON re.COD_ELP = ep.COD_ELP
+    LEFT JOIN INS_ADM_ETP iae
+        ON re.COD_IND = iae.COD_IND
+       AND re.COD_ANU = iae.COD_ANU
+    JOIN INDIVIDU ind
+        ON re.COD_IND = ind.COD_IND
+    WHERE
+        ({IDENT_FILTER})
+        AND ep.COD_NEL LIKE :cod_nel
+    GROUP BY
+        ind.COD_ETU,
+        ind.LIB_NOM_PAT_IND,
+        ind.LIB_PR1_IND,
+        ind.DATE_NAI_IND,
+        ind.CIN_IND,
+        re.COD_ANU,
+        re.COD_ELP,
+        ep.LIB_ELP
+)
+SELECT
+    code_etudiant,
+    nom_famille,
+    prenom,
+    date_naissance,
+    cin,
+    annee_universitaire AS ANNEE,
+    COD_ELP,
+    LIB_ELP,
+    'S' || num_semestre AS SEMESTRE,
+    note_affichee,
+    cod_tre
+FROM ModulesAvecSemestre
+ORDER BY
+    annee_universitaire,
+    num_semestre,
+    COD_ELP
+"""
+
+SQL_INSCRIPTION_TEMPLATE = """
+SELECT DISTINCT
+    i.COD_ETU AS APOGEE,
+    i.LIB_NOM_PAT_IND AS NOM,
+    i.LIB_PR1_IND AS PRENOM,
+    i.CIN_IND AS CIN,
+    iae.COD_DIP AS CODE_DIPLOME,
+    d.LIB_DIP AS NOM_DIPLOME,
+    iae.COD_ETP AS CODE_ETAPE,
+    etp.LIB_ETP AS NOM_ETAPE,
+    iae.COD_ANU AS ANNEE_INSCRIPTION
+FROM
+    INDIVIDU i
+JOIN INS_ADM_ETP iae ON i.COD_IND = iae.COD_IND
+JOIN DIPLOME d ON iae.COD_DIP = d.COD_DIP
+JOIN ETAPE etp ON iae.COD_ETP = etp.COD_ETP
+WHERE
+    ({IDENT_FILTER})
+    AND iae.ETA_IAE = 'E'
+    AND (:annee IS NULL OR iae.COD_ANU = :annee)
+ORDER BY ANNEE_INSCRIPTION DESC
+"""
+
+SQL_ABI_TEMPLATE = """
+SELECT DISTINCT
+    ind.COD_ETU AS CODE_APOGEE,
+    ind.CIN_IND AS CIN,
+    ind.LIB_NOM_PAT_IND AS NOM,
+    ind.LIB_PR1_IND AS PRENOM,
+    re.COD_ELP,
+    ep.LIB_ELP,
+    re.COD_ANU AS ANNEE,
+    re.NOT_SUB_ELP AS ABSENCE,
+    re.COD_TRE
+FROM RESULTAT_ELP re
+JOIN INDIVIDU ind ON re.COD_IND = ind.COD_IND
+JOIN ELEMENT_PEDAGOGI ep ON re.COD_ELP = ep.COD_ELP
+WHERE
+    re.NOT_SUB_ELP LIKE 'AB%'
+    {IDENT_EXTRA}
+    {MODULE_EXTRA}
+ORDER BY ind.COD_ETU, re.COD_ELP
+"""

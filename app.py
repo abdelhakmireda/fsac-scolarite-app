@@ -1,383 +1,331 @@
 import streamlit as st
 import pandas as pd
-import oracledb
-import base64
+
+from src.db import init_oracle_client, create_pool, close_pool, run_query_df, build_ident_filter
+from src.ui import ensure_state, load_file_b64, apply_css, navbar, sidebar, touch_stats
+from src.queries import SQL_PARCOURS_TEMPLATE, SQL_INSCRIPTION_TEMPLATE, SQL_ABI_TEMPLATE
+from src.config import LOGO_PATH
 
 # ==============================
-# CONFIG ORACLE
-# ==============================
-HOST = "172.16.1.104"
-PORT = 15211
-SERVICE = "PROD"
-
-oracledb.init_oracle_client(lib_dir=r"C:\oracle\instantclient_21_19")
-
-# ==============================
-# REQUÊTES SQL
-# ==============================
-QUERIES = {
-    "Parcours Étudiant": """
-WITH ModulesAvecSemestre AS (
-    SELECT
-        ind.COD_ETU                 AS code_etudiant,
-        ind.LIB_NOM_PAT_IND         AS nom_famille,
-        ind.LIB_PR1_IND             AS prenom,
-        ind.DATE_NAI_IND            AS date_naissance,
-        ind.CIN_IND                 AS cin,
-        re.COD_ANU                  AS annee_universitaire,
-        re.COD_ELP,
-        ep.LIB_ELP,
-        SUBSTR(re.COD_ELP, 5, 1)    AS num_semestre,
-
-        /* 🔥 PRIORITÉ ABSOLUE ABI / ABJ */
-        CASE
-            WHEN SUM(
-                 CASE
-                     WHEN re.NOT_SUB_ELP IS NOT NULL THEN 1
-                     ELSE 0
-                 END
-            ) > 0
-            THEN MAX(re.NOT_SUB_ELP)
-            ELSE TO_CHAR(MAX(re.NOT_ELP))
-        END AS note_affichee,
-
-        MAX(re.COD_TRE) AS cod_tre
-
-    FROM RESULTAT_ELP re
-    JOIN ELEMENT_PEDAGOGI ep
-        ON re.COD_ELP = ep.COD_ELP
-    LEFT JOIN INS_ADM_ETP iae
-        ON re.COD_IND = iae.COD_IND
-       AND re.COD_ANU = iae.COD_ANU
-    JOIN INDIVIDU ind
-        ON re.COD_IND = ind.COD_IND
-    WHERE
-        (
-            ind.COD_ETU = CASE
-                WHEN REGEXP_LIKE(:valeur, '^[0-9]+$')
-                THEN TO_NUMBER(:valeur)
-            END
-            OR ind.CIN_IND = :valeur
-        )
-        AND ep.COD_NEL LIKE :cod_nel
-    GROUP BY
-        ind.COD_ETU,
-        ind.LIB_NOM_PAT_IND,
-        ind.LIB_PR1_IND,
-        ind.DATE_NAI_IND,
-        ind.CIN_IND,
-        re.COD_ANU,
-        re.COD_ELP,
-        ep.LIB_ELP
-)
-SELECT
-    code_etudiant,
-    nom_famille,
-    prenom,
-    date_naissance,
-    cin,
-    annee_universitaire AS annee,
-    COD_ELP,
-    LIB_ELP,
-    'S' || num_semestre AS semestre,
-    note_affichee,
-    cod_tre
-FROM ModulesAvecSemestre
-ORDER BY
-    annee_universitaire,
-    num_semestre,
-    COD_ELP
-""",
-
-    "Inscription Actuelle": """
-SELECT DISTINCT
-    i.COD_ETU AS APOGEE,
-    i.LIB_NOM_PAT_IND AS NOM,
-    i.LIB_PR1_IND AS PRENOM,
-    i.CIN_IND AS CIN,
-    iae.COD_DIP AS CODE_DIPLOME,
-    d.LIB_DIP AS NOM_DIPLOME,
-    iae.COD_ETP AS CODE_ETAPE,
-    etp.LIB_ETP AS NOM_ETAPE,
-    iae.COD_ANU AS ANNEE_INSCRIPTION
-FROM
-    INDIVIDU i
-JOIN INS_ADM_ETP iae ON i.COD_IND = iae.COD_IND
-JOIN DIPLOME d ON iae.COD_DIP = d.COD_DIP
-JOIN ETAPE etp ON iae.COD_ETP = etp.COD_ETP
-WHERE
-    (i.COD_ETU = CASE WHEN REGEXP_LIKE(:valeur, '^[0-9]+$') THEN TO_NUMBER(:valeur) END
-     OR UPPER(i.CIN_IND) = UPPER(:valeur))
-    AND iae.ETA_IAE = 'E'
-    AND (:annee IS NULL OR iae.COD_ANU = :annee)
-ORDER BY ANNEE_INSCRIPTION DESC
-"""
-}
-
-# ==============================
-# UI STREAMLIT
+# STREAMLIT CONFIG
 # ==============================
 st.set_page_config(
     page_title="Service Scolarité FSAC",
     page_icon="🎓",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # ==============================
-# BACKGROUND
+# INIT
 # ==============================
-try:
-    with open(r"C:\oracle\instantclient_21_19\FSAC_LOGO.jpg", "rb") as image_file:
-        base64_image = base64.b64encode(image_file.read()).decode("utf-8")
-except FileNotFoundError:
-    base64_image = ""
+init_oracle_client()
+ensure_state()
 
-st.markdown(
-    f"""
-    <style>
-    [data-testid="stAppViewContainer"] {{
-        position: relative;
-    }}
-    [data-testid="stAppViewContainer"]::before {{
-        content: '';
-        position: absolute;
-        inset: 0;
-        background-image: url("data:image/jpg;base64,{base64_image}");
-        background-size: cover;
-        opacity: 0.3;
-        z-index: -1;
-    }}
-    div.stButton > button {{
-        background-color: red;
-        color: white;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+logo_b64 = load_file_b64(LOGO_PATH)
 
 # ==============================
-# SIDEBAR
+# AUTH STATE
 # ==============================
-with st.sidebar:
-    st.title("Service Scolarité FSAC")
-    st.markdown("---")
+def is_logged_in():
+    return "pool" in st.session_state and st.session_state.get("oracle_user")
 
-    if "conn" in st.session_state:
-        selected_action = st.selectbox(
-            "Actions",
-            ["Accueil", "Dashboard", "Parcours Étudiant", "Inscription Actuelle"]
-        )
-    else:
-        st.info("Veuillez vous connecter pour accéder au menu.")
-        selected_action = "Accueil"
+def do_logout():
+    if "pool" in st.session_state:
+        close_pool(st.session_state["pool"])
+    for k in ["pool", "oracle_user", "df_parcours", "df_inscription", "df_abi", "last_student"]:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.rerun()
 
-# ==============================
-# HEADER
-# ==============================
-st.title("🎓 Service Scolarité FSAC")
-st.markdown("---")
-
-if "conn" in st.session_state:
-    col1, col2 = st.columns([5, 1])
-    with col2:
-        if st.button("🚪 Déconnexion", type="primary"):
-            del st.session_state["conn"]
-            st.rerun()
+logged = is_logged_in()
+oracle_user = st.session_state.get("oracle_user", "")
 
 # ==============================
-# ACCUEIL
+# NAVBAR + SIDEBAR (theme choice happens in sidebar)
 # ==============================
-if selected_action == "Accueil":
-    if "conn" not in st.session_state:
-        col1, col2, col3 = st.columns(3)
-        with col2:
-            st.subheader("🔐 Connexion Oracle")
+navbar(logged, oracle_user, do_logout)
+page = sidebar(logged, oracle_user)
+
+# ==============================
+# APPLY CSS AFTER SIDEBAR (so theme is already chosen)
+# ==============================
+apply_css("styles/base.css", logo_b64)
+
+# ==============================
+# PAGES
+# ==============================
+if page == "Accueil":
+    st.markdown("## 👋 Bienvenue")
+
+    if not logged:
+        st.markdown('<div style="max-width:560px;margin:0 auto;">', unsafe_allow_html=True)
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("<div class='card-title'>🔐 Connexion Oracle</div>", unsafe_allow_html=True)
+        st.markdown("<div class='card-sub'>Saisis tes identifiants Oracle</div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        with st.form("login_form", clear_on_submit=False):
             user = st.text_input("👤 Utilisateur Oracle")
             password = st.text_input("🔒 Mot de passe", type="password")
+            ok = st.form_submit_button("Connexion", use_container_width=True)
 
-            if st.button("Connexion"):
-                try:
-                    conn = oracledb.connect(
-                        user=user,
-                        password=password,
-                        host=HOST,
-                        port=PORT,
-                        service_name=SERVICE
-                    )
-                    st.session_state["conn"] = conn
-                    st.success("Connexion réussie ✅")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erreur de connexion : {e}")
-            st.markdown('</div>', unsafe_allow_html=True)
+        if ok:
+            try:
+                pool = create_pool(user, password)
+                st.session_state["pool"] = pool
+                st.session_state["oracle_user"] = user
+                touch_stats("Connexion")
+                st.success("Connexion réussie ✅")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erreur de connexion : {e}")
 
-    st.subheader("Bienvenue sur l'Application Service Scolarité FSAC")
-    st.markdown("""
-    **Fonctionnalités disponibles :**
-    - Parcours académique détaillé
-    - Inscription actuelle et historique (filière, étape, années)
-    - Dashboard (en développement)
-    """)
-# ==============================
-# PARCOURS ÉTUDIANT
-# ==============================
-elif selected_action == "Parcours Étudiant":
+        st.markdown("</div></div>", unsafe_allow_html=True)
 
-    st.subheader("🔎 Recherche Parcours Étudiant")
-
-    col1, col2 = st.columns([3, 1])
-    valeur = col1.text_input("CIN ou Code Apogée").strip().upper()
-
-    type_affichage = st.radio(
-        "Type d’affichage",
-        ["Modules", "Semestres"],
-        horizontal=True
+    st.markdown("---")
+    st.markdown(
+        """
+**Fonctionnalités :**
+- 🧾 Parcours académique détaillé (Modules / Semestres)
+- 📋 Inscriptions (filière, étape, année)
+- 🚫 Étudiants ABI / ABJ (filtrable)
+- 📊 Dashboard (cartes + stats d’usage)
+"""
     )
 
-    cod_nel = "MO%" if type_affichage == "Modules" else "SM%"
+elif page == "Dashboard":
+    if not logged:
+        st.warning("Veuillez vous connecter.")
+    else:
+        s = st.session_state["stats"]
+        last_student = st.session_state.get("last_student", "—")
 
-    if col2.button("Afficher le parcours"):
-        if valeur:
-            cur = st.session_state["conn"].cursor()
-            cur.execute(
-                QUERIES["Parcours Étudiant"],
-                valeur=valeur,
-                cod_nel=cod_nel
+        st.markdown("## 📊 Dashboard")
+        c1, c2, c3, c4 = st.columns(4)
+
+        def kpi(col, title, value, sub):
+            col.markdown(
+                f"""
+<div class="card">
+  <div class="card-title">{title}</div>
+  <div style="font-size:1.6rem;font-weight:900;margin-top:.25rem;">{value}</div>
+  <div class="card-sub">{sub}</div>
+</div>
+""",
+                unsafe_allow_html=True
             )
-            rows = cur.fetchall()
-            cols = [c[0] for c in cur.description]
 
-            if rows:
-                st.session_state["df_parcours"] = pd.DataFrame(rows, columns=cols)
-                st.success(f"{len(rows)} éléments trouvés")
+        kpi(c1, "🧾 Parcours", s["parcours"], "Requêtes exécutées")
+        kpi(c2, "📋 Inscriptions", s["inscription"], "Requêtes exécutées")
+        kpi(c3, "🚫 ABI/ABJ", s["abi"], "Requêtes exécutées")
+        kpi(c4, "👤 Dernier", last_student, f"Dernière action: {s['last_action']}")
+
+elif page == "Parcours Étudiant":
+    if not logged:
+        st.warning("Veuillez vous connecter.")
+    else:
+        st.markdown("## 🧾 Parcours Étudiant")
+        col1, col2 = st.columns([3, 2])
+
+        valeur = col1.text_input("CIN ou Code Apogée", key="parcours_valeur").strip().upper()
+        type_aff = col2.radio("Type d’affichage", ["Modules", "Semestres"], horizontal=True)
+        cod_nel = "MO%" if type_aff == "Modules" else "SM%"
+
+        if st.button("Afficher le parcours", type="primary"):
+            if not valeur:
+                st.warning("Veuillez saisir un CIN ou Code Apogée.")
             else:
-                st.info("Aucun résultat trouvé")
+                ident_filter, binds = build_ident_filter(valeur, "ind")
+                if not ident_filter:
+                    st.warning("Identifiant invalide.")
+                else:
+                    sql = SQL_PARCOURS_TEMPLATE.replace("{IDENT_FILTER}", ident_filter)
+                    binds["cod_nel"] = cod_nel
 
-    if "df_parcours" in st.session_state:
-        df = st.session_state["df_parcours"]
+                    try:
+                        df = run_query_df(st.session_state["pool"], sql, binds)
+                        if df.empty:
+                            st.info("Aucun résultat trouvé.")
+                        else:
+                            st.session_state["df_parcours"] = df
+                            st.session_state["stats"]["parcours"] += 1
+                            touch_stats("Parcours")
+                            st.session_state["last_student"] = str(df.iloc[0].get("CODE_ETUDIANT", valeur))
+                            st.success(f"{len(df)} éléments trouvés ✅")
+                    except Exception as e:
+                        st.error(f"Erreur Oracle : {e}")
 
-        # ==============================
-        # LOGIQUE STATUT APOGÉE (OFFICIELLE)
-        # ==============================
-        VALID_CODES = ["V", "VE", "AC", "VT", "VAR"]
-        INVALID_CODES = ["ABI", "ABJ", "RAT"]
-        IGNORED_CODES = ["NCR"]
+        if "df_parcours" in st.session_state:
+            df = st.session_state["df_parcours"].copy()
 
-        # Exclure NCR
-        df = df[~df["COD_TRE"].isin(IGNORED_CODES)]
+            VALID_CODES = ["V", "VE", "AC", "VT", "VAR"]
+            IGNORED_CODES = ["NCR"]
 
-        # Validation
-        df["MODULE_VALIDE"] = df["COD_TRE"].isin(VALID_CODES)
+            df = df[~df["COD_TRE"].isin(IGNORED_CODES)]
+            df["MODULE_VALIDE"] = df["COD_TRE"].isin(VALID_CODES)
 
-        grouped = df.groupby(["ANNEE", "SEMESTRE"]).agg(
-            NB_MODULES=("COD_ELP", "count"),
-            MODULES_VALIDES=("MODULE_VALIDE", "sum")
-        ).reset_index()
+            grouped = df.groupby(["ANNEE", "SEMESTRE"]).agg(
+                NB_MODULES=("COD_ELP", "count"),
+                MODULES_VALIDES=("MODULE_VALIDE", "sum")
+            ).reset_index()
 
-        def statut_semestre(row):
-            if row["NB_MODULES"] == row["MODULES_VALIDES"]:
-                return "Validé"
-            elif row["MODULES_VALIDES"] > 0:
-                return "Partiel"
-            else:
+            def statut_semestre(row):
+                if row["NB_MODULES"] == row["MODULES_VALIDES"]:
+                    return "Validé"
+                elif row["MODULES_VALIDES"] > 0:
+                    return "Partiel"
                 return "Non validé"
 
-        grouped["STATUT"] = grouped.apply(statut_semestre, axis=1)
+            grouped["STATUT"] = grouped.apply(statut_semestre, axis=1)
 
-        st.markdown("### Filtres")
-        f1, f2 = st.columns(2)
+            st.markdown("### 🎚️ Filtres")
+            f1, f2 = st.columns(2)
 
-        selected_annees = f1.multiselect(
-            "Année(s)",
-            sorted(df["ANNEE"].unique()),
-            default=sorted(df["ANNEE"].unique())
-        )
+            selected_annees = f1.multiselect(
+                "Année(s)",
+                sorted(grouped["ANNEE"].unique()),
+                default=sorted(grouped["ANNEE"].unique())
+            )
 
-        selected_statuts = f2.multiselect(
-            "Statut",
-            ["Validé", "Partiel", "Non validé"],
-            default=["Validé", "Partiel", "Non validé"]
-        )
+            selected_statuts = f2.multiselect(
+                "Statut",
+                ["Validé", "Partiel", "Non validé"],
+                default=["Validé", "Partiel", "Non validé"]
+            )
 
-        filtered = grouped[
-            grouped["ANNEE"].isin(selected_annees)
-            & grouped["STATUT"].isin(selected_statuts)
-        ]
+            filtered = grouped[
+                grouped["ANNEE"].isin(selected_annees)
+                & grouped["STATUT"].isin(selected_statuts)
+            ]
 
-        filtered_df = df.merge(
-            filtered[["ANNEE", "SEMESTRE"]],
-            on=["ANNEE", "SEMESTRE"]
-        )
+            filtered_df = df.merge(filtered[["ANNEE", "SEMESTRE"]], on=["ANNEE", "SEMESTRE"])
+            st.dataframe(filtered_df, use_container_width=True, hide_index=True, height=600)
 
-        st.dataframe(
-            filtered_df,
-            use_container_width=True,
-            hide_index=True,
-            height=600
-        )
+elif page == "Inscription Actuelle":
+    if not logged:
+        st.warning("Veuillez vous connecter.")
+    else:
+        st.markdown("## 📋 Inscription(s) de l’étudiant")
 
-# ------------------------------
-# INSCRIPTION ACTUELLE
-# ------------------------------
-elif selected_action == "Inscription Actuelle":
-    st.subheader("📋 Inscription(s) de l’étudiant (Filière & Étape)")
+        c1, c2, c3 = st.columns([3, 2, 1])
+        valeur = c1.text_input("CIN ou Code Apogée", key="insc_valeur").strip().upper()
+        annee_str = c2.text_input("Année universitaire (ex: 2024, vide = toutes)", key="insc_annee")
+        annee = int(annee_str) if annee_str.strip().isdigit() else None
 
-    col1, col2, col3 = st.columns([3, 1.5, 1])
-    valeur = col1.text_input("CIN ou Code Apogée", key="inscription_input")
-    valeur = valeur.strip().upper()
-
-    annee_str = col2.text_input("Année universitaire (ex: 2024, vide = toutes)", key="annee_input")
-    annee = int(annee_str) if annee_str.strip().isdigit() else None
-
-    if col3.button("Rechercher", key="btn_inscription"):
-        if not valeur:
-            st.warning("Veuillez saisir un CIN ou Code Apogée")
-        else:
-            try:
-                sql = QUERIES["Inscription Actuelle"]
-                cur = st.session_state["conn"].cursor()
-                cur.execute(sql, {'valeur': valeur, 'annee': annee})
-                rows = cur.fetchall()
-                cols = [c[0] for c in cur.description]
-
-                if not rows:
-                    st.info("Aucune inscription trouvée.")
+        if c3.button("Rechercher", type="primary"):
+            if not valeur:
+                st.warning("Veuillez saisir un CIN ou Code Apogée")
+            else:
+                ident_filter, binds = build_ident_filter(valeur, "i")
+                if not ident_filter:
+                    st.warning("Identifiant invalide.")
                 else:
-                    df = pd.DataFrame(rows, columns=cols)
-                    st.session_state["df_inscription"] = df
-                    st.success(f"{len(df)} inscription(s) trouvée(s)")
+                    sql = SQL_INSCRIPTION_TEMPLATE.replace("{IDENT_FILTER}", ident_filter)
+                    binds["annee"] = annee
+
+                    try:
+                        df = run_query_df(st.session_state["pool"], sql, binds)
+                        if df.empty:
+                            st.info("Aucune inscription trouvée.")
+                            if "df_inscription" in st.session_state:
+                                del st.session_state["df_inscription"]
+                        else:
+                            st.session_state["df_inscription"] = df
+                            st.session_state["stats"]["inscription"] += 1
+                            touch_stats("Inscription")
+                            st.session_state["last_student"] = str(df.iloc[0].get("APOGEE", valeur))
+                            st.success(f"{len(df)} inscription(s) trouvée(s) ✅")
+                    except Exception as e:
+                        st.error(f"Erreur lors de la requête : {e}")
+
+        if "df_inscription" in st.session_state:
+            df = st.session_state["df_inscription"]
+
+            # ==============================
+            # 1) TABLEAU RÉSUMÉ (comme avant)
+            # ==============================
+            st.markdown("### 📌 Résultats")
+            st.dataframe(
+                df[['APOGEE', 'NOM', 'PRENOM', 'NOM_DIPLOME', 'NOM_ETAPE', 'ANNEE_INSCRIPTION']],
+                column_config={
+                    'APOGEE': 'Code Apogée',
+                    'NOM': 'Nom',
+                    'PRENOM': 'Prénom',
+                    'NOM_DIPLOME': 'Filière / Diplôme',
+                    'NOM_ETAPE': 'Étape',
+                    'ANNEE_INSCRIPTION': 'Année'
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+
+            # ==============================
+            # 2) DÉTAILS (expanders) (comme avant)
+            # ==============================
+            st.markdown("### 🔎 Détails")
+            for _, row in df.iterrows():
+                titre = f"{row['ANNEE_INSCRIPTION']} — {row['NOM']} {row['PRENOM']}"
+                with st.expander(titre):
+                    st.markdown(f"**Code Apogée** : {row['APOGEE']}")
+                    st.markdown(f"**CIN** : {row['CIN'] if pd.notna(row['CIN']) else '—'}")
+
+                    st.markdown(
+                        f"**Filière / Diplôme** : {row['NOM_DIPLOME']} "
+                        f"(**{row['CODE_DIPLOME']}**)"
+                    )
+
+                    st.markdown(
+                        f"**Étape** : {row['NOM_ETAPE']} "
+                        f"(**{row['CODE_ETAPE']}**)"
+                    )
+
+                    st.markdown(f"**Année inscription** : {row['ANNEE_INSCRIPTION']}")
+
+elif page == "Étudiants ABI":
+    if not logged:
+        st.warning("Veuillez vous connecter.")
+    else:
+        st.markdown("## 🚫 Étudiants avec ABI / ABJ")
+
+        col1, col2, col3 = st.columns([3, 2, 1])
+        valeur = col1.text_input("Code Apogée ou CIN (optionnel)", key="abi_valeur").strip().upper()
+        module = col2.text_input("Code module (ex: FL%, MA%, SM%)", key="abi_module").strip().upper()
+
+        if col3.button("Rechercher", type="primary"):
+            try:
+                binds = {}
+                ident_extra = ""
+                module_extra = ""
+
+                if valeur:
+                    ident_filter, b = build_ident_filter(valeur, "ind")
+                    if ident_filter:
+                        ident_extra = f" AND ({ident_filter})"
+                        binds.update(b)
+
+                if module:
+                    module_extra = " AND re.COD_ELP LIKE :module"
+                    binds["module"] = module
+
+                sql = SQL_ABI_TEMPLATE.format(
+                    IDENT_EXTRA=ident_extra,
+                    MODULE_EXTRA=module_extra
+                )
+
+                df = run_query_df(st.session_state["pool"], sql, binds)
+
+                if df.empty:
+                    st.info("Aucun étudiant avec ABI / ABJ trouvé.")
+                else:
+                    st.session_state["df_abi"] = df
+                    st.session_state["stats"]["abi"] += 1
+                    touch_stats("ABI/ABJ")
+                    st.success(f"{len(df)} étudiant(s) trouvé(s) ✅")
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+
             except Exception as e:
-                st.error(f"Erreur lors de la requête : {e}")
+                st.error(f"Erreur Oracle : {e}")
 
-    if "df_inscription" in st.session_state:
-        df = st.session_state["df_inscription"]
-
-        # Tableau récapitulatif avec colonnes en MAJUSCULES
-        st.markdown("### Résultats")
-        st.dataframe(
-            df[['APOGEE', 'NOM', 'PRENOM', 'NOM_DIPLOME', 'NOM_ETAPE', 'ANNEE_INSCRIPTION']],
-            column_config={
-                'APOGEE': 'Code Apogée',
-                'NOM': 'Nom',
-                'PRENOM': 'Prénom',
-                'NOM_DIPLOME': 'Filière / Diplôme',
-                'NOM_ETAPE': 'Étape',
-                'ANNEE_INSCRIPTION': 'Année'
-            },
-            hide_index=True,
-            use_container_width=True
-        )
-
-        # Détails dans des expanders
-        st.markdown("### Détails")
-        for _, row in df.iterrows():
-            with st.expander(f"{row['ANNEE_INSCRIPTION']} - {row['NOM']} {row['PRENOM']}"):
-                st.markdown(f"**Code Apogée** : {row['APOGEE']}")
-                st.markdown(f"**CIN** : {row['CIN'] if pd.notna(row['CIN']) else '—'}")
-                st.markdown(f"**Filière / Diplôme** : {row['NOM_DIPLOME']} ({row['CODE_DIPLOME']})")
-                st.markdown(f"**Étape** : {row['NOM_ETAPE']} ({row['CODE_ETAPE']})")
-
-# Footer
 st.markdown("---")
 st.caption("© Faculté des Sciences Aïn Chock – Service Scolarité FSAC – Application interne")
