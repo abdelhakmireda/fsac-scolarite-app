@@ -1,14 +1,21 @@
+import os
 import pandas as pd
 import oracledb
 
 from .config import HOST, PORT, SERVICE, ORACLE_CLIENT_LIB_DIR
 
 def init_oracle_client():
-    # Thick mode si possible (instant client). Si déjà initialisé => ignore.
+    # Ajouter Instant Client au PATH (Windows)
+    if ORACLE_CLIENT_LIB_DIR:
+        os.environ["PATH"] = ORACLE_CLIENT_LIB_DIR + ";" + os.environ.get("PATH", "")
+
     try:
         oracledb.init_oracle_client(lib_dir=ORACLE_CLIENT_LIB_DIR)
-    except Exception:
-        pass
+    except Exception as e:
+        raise RuntimeError(
+            f"Impossible d'initialiser Oracle Client (thick mode). "
+            f"Vérifie ORACLE_CLIENT_LIB_DIR={ORACLE_CLIENT_LIB_DIR}. Détail: {e}"
+        )
 
 def make_dsn():
     return oracledb.makedsn(HOST, PORT, service_name=SERVICE)
