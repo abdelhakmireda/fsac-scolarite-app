@@ -102,3 +102,59 @@ WHERE
     {MODULE_EXTRA}
 ORDER BY ind.COD_ETU, re.COD_ELP
 """
+SQL_ARCHIVE_TEMPLATE = """
+SELECT DISTINCT
+  ind.COD_IND                           AS COD_IND,
+  ind.COD_ETU                           AS APOGEE,
+  ind.COD_NNE_IND                       AS CNE,
+  ind.CIN_IND                           AS CIN,
+  ind.LIB_NOM_PAT_IND                   AS NOM,
+  ind.LIB_PR1_IND                       AS PRENOM,
+  ind.DATE_NAI_IND                      AS DATE_NAISSANCE,
+
+  iae.COD_DIP                           AS DIPLOME,
+  d.LIB_DIP                             AS LIB_DIPLOME,
+  iae.COD_ETP                           AS ETAPE,
+
+  re.COD_ELP                            AS COD_ELP,
+  REGEXP_REPLACE(ep.LIB_ELP, '[[:cntrl:]]', ' ') AS LIB_ELP,
+  ep.COD_NEL                            AS COD_NEL,
+
+  re.COD_ANU                            AS ANNEE_DE_VALIDATION,
+  ep.NBR_PNT_ECT_ELP                    AS CREDITS,
+
+  NVL(TO_CHAR(re.NOT_ELP), '')          AS NOT_ELP,
+  re.COD_TRE                            AS COD_TRE,
+  MAX(re.COD_SES)                       AS COD_SES_MAX
+
+FROM INDIVIDU ind
+JOIN INS_ADM_ETP iae       ON ind.COD_IND = iae.COD_IND
+JOIN DIPLOME d             ON d.COD_DIP = iae.COD_DIP
+JOIN RESULTAT_ELP re       ON re.COD_IND = iae.COD_IND AND re.COD_ANU = iae.COD_ANU
+JOIN ELEMENT_PEDAGOGI ep   ON ep.COD_ELP = re.COD_ELP
+
+WHERE
+  iae.ETA_IAE = 'E'
+  AND ep.COD_ELP LIKE :filiere
+
+  -- identifiant optionnel (apogee ou cin)
+  AND (
+        :ident IS NULL
+        OR TO_CHAR(ind.COD_ETU) = :ident
+        OR UPPER(ind.CIN_IND) = :ident
+      )
+
+  AND re.NOT_ELP IS NOT NULL
+  AND re.COD_TRE IS NOT NULL
+
+GROUP BY
+  ind.COD_IND, ind.COD_ETU, ind.COD_NNE_IND, ind.CIN_IND,
+  ind.LIB_NOM_PAT_IND, ind.LIB_PR1_IND, ind.DATE_NAI_IND,
+  iae.COD_DIP, d.LIB_DIP, iae.COD_ETP,
+  re.COD_ELP, ep.LIB_ELP, ep.COD_NEL, re.COD_ANU,
+  ep.NBR_PNT_ECT_ELP, re.NOT_ELP, re.COD_TRE
+
+ORDER BY
+  ind.COD_ETU, re.COD_ANU, re.COD_ELP
+"""
+

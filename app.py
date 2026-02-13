@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
+import io
+import csv
 
 from src.db import init_oracle_client, create_pool, close_pool, run_query_df, build_ident_filter
 from src.ui import ensure_state, load_file_b64, apply_css, navbar, sidebar, touch_stats
-from src.queries import SQL_PARCOURS_TEMPLATE, SQL_INSCRIPTION_TEMPLATE, SQL_ABI_TEMPLATE
+from src.queries import SQL_PARCOURS_TEMPLATE, SQL_INSCRIPTION_TEMPLATE, SQL_ABI_TEMPLATE,SQL_ARCHIVE_TEMPLATE
 from src.config import LOGO_PATH
 
 # ==============================
@@ -326,6 +328,161 @@ elif page == "Étudiants ABI":
 
             except Exception as e:
                 st.error(f"Erreur Oracle : {e}")
+elif page == "Archive Apogée":
+    if not logged:
+        st.warning("Veuillez vous connecter.")
+    else:
+        st.markdown("## 🗂️ Archive Apogée (CSV / Oracle)")
+
+        # --------------------------
+        # Helpers
+        # --------------------------
+        def parse_mixed_date(s):
+            """Parse YYYY-MM-DD OR DD/MM/YY OR DD/MM/YYYY. Return Timestamp or NaT."""
+            if pd.isna(s) or str(s).strip() == "":
+                return pd.NaT
+            s = str(s).strip()
+
+            # 1) ISO YYYY-MM-DD
+            dt = pd.to_datetime(s, errors="coerce", format="%Y-%m-%d")
+            if not pd.isna(dt):
+                return dt
+
+            # 2) FR formats (DD/MM/YY or DD/MM/YYYY) + autres variantes
+            return pd.to_datetime(s, errors="coerce", dayfirst=True)
+
+        # --------------------------
+        # Inputs
+        # --------------------------
+        t1, t2, t3 = st.columns([2, 2, 1])
+
+        ident = t1.text_input("Apogée ou CIN (optionnel)", key="arch_ident").strip().upper()
+
+        filiere = t2.text_input("Filière (LIKE) (vide => FL%)", key="arch_filiere").strip().upper()
+        if not filiere:
+            filiere = "FL%"
+
+        max_rows = t3.number_input("Max lignes (0 = illimité)", min_value=0, value=50000, step=1000)
+
+        c1, c2 = st.columns([1, 1])
+
+        # --------------------------
+        # 1) Recherche Oracle
+        # --------------------------
+        if c1.button("🔎 Charger depuis Oracle", type="primary"):
+            binds = {
+                "ident": ident if ident else None,
+                "filiere": filiere
+            }
+
+            try:
+                df = run_query_df(st.session_state["pool"], SQL_ARCHIVE_TEMPLATE, binds)
+
+                # Convertir DATE_NAISSANCE si elle existe (Oracle peut renvoyer date, str, etc.)
+                if "DATE_NAISSANCE" in df.columns:
+                    df["DATE_NAISSANCE"] = df["DATE_NAISSANCE"].apply(parse_mixed_date)
+
+                # Limitation côté app (si on ne veut pas toucher SQL)
+                if max_rows and len(df) > int(max_rows):
+                    df = df.head(int(max_rows))
+                    st.info(f"Affichage limité à {int(max_rows)} lignes (sur un total plus grand).")
+
+                if df.empty:
+                    st.info("Aucun résultat.")
+                    if "df_archive" in st.session_state:
+                        del st.session_state["df_archive"]
+                else:
+                    st.session_state["df_archive"] = df
+                    st.success(f"{len(df)} lignes affichées ✅")
+
+            except Exception as e:
+                st.error(f"Erreur Oracle : {e}")
+
+        # --------------------------
+        # 2) Import CSV UTF-8
+        # --------------------------
+        uploaded = c2.file_uploader("📥 Importer un CSV (UTF-8)", type=["csv"])
+        if uploaded is not None:
+            try:
+                # Astuce : certains CSV Excel ont besoin de utf-8-sig
+                try:
+                    df_csv = pd.read_csv(
+                        uploaded,
+                        sep=";",
+                        encoding="utf-8",
+                        dtype=str,
+                        keep_default_na=False
+                    )
+                except UnicodeDecodeError:
+                    uploaded.seek(0)
+                    df_csv = pd.read_csv(
+                        uploaded,
+                        sep=";",
+                        encoding="utf-8-sig",
+                        dtype=str,
+                        keep_default_na=False
+                    )
+
+                # Convertir DATE_NAISSANCE si elle existe (CSV = string)
+                if "DATE_NAISSANCE" in df_csv.columns:
+                    df_csv["DATE_NAISSANCE"] = df_csv["DATE_NAISSANCE"].apply(parse_mixed_date)
+
+                st.session_state["df_archive"] = df_csv
+                st.success(f"CSV importé : {len(df_csv)} lignes ✅")
+
+            except Exception as e:
+                st.error(f"Erreur lecture CSV : {e}")
+
+        # --------------------------
+        # Affichage + filtres locaux + export
+        # --------------------------
+        if "df_archive" in st.session_state:
+            df = st.session_state["df_archive"].copy()
+
+            # Filtre local ident (utile même pour CSV)
+            if ident:
+                cols = {c.upper(): c for c in df.columns}
+                ap_col = cols.get("APOGEE")
+                cin_col = cols.get("CIN")
+
+                if ap_col and cin_col:
+                    df = df[
+                        (df[ap_col].astype(str).str.upper() == ident)
+                        | (df[cin_col].astype(str).str.upper() == ident)
+                    ]
+                elif ap_col:
+                    df = df[df[ap_col].astype(str).str.upper() == ident]
+                elif cin_col:
+                    df = df[df[cin_col].astype(str).str.upper() == ident]
+                else:
+                    st.warning("Le fichier/jeu de données ne contient pas les colonnes APOGEE ou CIN pour filtrer.")
+
+            # Affichage date en string propre (optionnel)
+            if "DATE_NAISSANCE" in df.columns:
+                # Timestamp -> string YYYY-MM-DD (laisse vide si NaT)
+                df["DATE_NAISSANCE"] = df["DATE_NAISSANCE"].dt.strftime("%Y-%m-%d")
+
+            st.markdown("### 📌 Résultats")
+            st.dataframe(df, use_container_width=True, hide_index=True, height=600)
+
+            # Export CSV propre (UTF-8 + quoting + line terminator)
+            st.markdown("### ⬇️ Export")
+            buf = io.StringIO()
+            df.to_csv(
+                buf,
+                index=False,
+                sep=";",
+                encoding="utf-8",
+                na_rep="",
+                quoting=csv.QUOTE_ALL,
+                lineterminator="\n"
+            )
+            st.download_button(
+                "Télécharger CSV (UTF-8)",
+                data=buf.getvalue().encode("utf-8"),
+                file_name="archive_apogee.csv",
+                mime="text/csv"
+            )
 
 st.markdown("---")
 st.caption("© Faculté des Sciences Aïn Chock – Service Scolarité FSAC – Application interne")

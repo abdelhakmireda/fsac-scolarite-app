@@ -131,7 +131,7 @@ def sidebar(is_logged_in: bool, oracle_user: str):
         st.caption("Accès rapide aux modules")
 
         if is_logged_in:
-            menu = ["🏠 Accueil", "📊 Dashboard", "🧾 Parcours Étudiant", "🚫 Étudiants ABI", "📋 Inscription Actuelle"]
+            menu = ["🏠 Accueil", "📊 Dashboard", "🧾 Parcours Étudiant", "🚫 Étudiants ABI", "📋 Inscription Actuelle","🗂️ Archive Apogée"]
         else:
             menu = ["🏠 Accueil"]
 
