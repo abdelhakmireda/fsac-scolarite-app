@@ -157,4 +157,47 @@ GROUP BY
 ORDER BY
   ind.COD_ETU, re.COD_ANU, re.COD_ELP
 """
+SQL_EXPORT_APOGEE_LIKE = """
+SELECT
+    ind.COD_ETU                                AS NUMERO,
+    ind.LIB_NOM_PAT_IND                        AS NOM,
+    ind.LIB_PR1_IND                            AS PRENOM,
+    TO_CHAR(ind.DATE_NAI_IND,'DD/MM/YYYY')     AS NAISSANCE,
+
+    re.COD_ELP                                 AS COD_ELP,
+    REGEXP_REPLACE(ep.LIB_ELP, '[[:cntrl:]]', ' ') AS LIB_ELP,
+
+    CASE
+        WHEN re.NOT_SUB_ELP IS NOT NULL THEN re.NOT_SUB_ELP
+        ELSE TO_CHAR(re.NOT_ELP)
+    END                                        AS NOTE,
+
+    20                                         AS BAREME,   -- comme ton export (si tu as une vraie colonne bareme, remplace ici)
+    re.COD_TRE                                 AS RESULTAT
+
+FROM RESULTAT_ELP re
+JOIN INDIVIDU ind            ON ind.COD_IND = re.COD_IND
+JOIN ELEMENT_PEDAGOGI ep     ON ep.COD_ELP = re.COD_ELP
+JOIN INS_ADM_ETP iae         ON iae.COD_IND = re.COD_IND AND iae.COD_ANU = re.COD_ANU
+
+WHERE
+    iae.ETA_IAE = 'E'
+    AND re.COD_ANU = :p_annee
+    AND ep.COD_NEL LIKE 'MO%'                 -- modules
+    AND re.COD_ELP LIKE :p_filiere            -- ex: FLPC%
+
+    AND (
+        :p_ident IS NULL
+        OR TO_CHAR(ind.COD_ETU) = :p_ident
+        OR UPPER(ind.CIN_IND) = :p_ident
+    )
+
+    AND (
+        :p_ses IS NULL OR re.COD_SES = :p_ses
+    )
+
+ORDER BY ind.COD_ETU, re.COD_ELP
+"""
+
+
 

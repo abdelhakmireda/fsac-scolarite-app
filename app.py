@@ -5,7 +5,7 @@ import csv
 
 from src.db import init_oracle_client, create_pool, close_pool, run_query_df, build_ident_filter
 from src.ui import ensure_state, load_file_b64, apply_css, navbar, sidebar, touch_stats
-from src.queries import SQL_PARCOURS_TEMPLATE, SQL_INSCRIPTION_TEMPLATE, SQL_ABI_TEMPLATE,SQL_ARCHIVE_TEMPLATE
+from src.queries import SQL_PARCOURS_TEMPLATE, SQL_INSCRIPTION_TEMPLATE, SQL_ABI_TEMPLATE,SQL_ARCHIVE_TEMPLATE, SQL_EXPORT_APOGEE_LIKE
 from src.config import LOGO_PATH
 
 # ==============================
@@ -481,6 +481,109 @@ elif page == "Archive Apogée":
                 "Télécharger CSV (UTF-8)",
                 data=buf.getvalue().encode("utf-8"),
                 file_name="archive_apogee.csv",
+                mime="text/csv"
+            )
+elif page == "Export Notes":
+    if not logged:
+        st.warning("Veuillez vous connecter.")
+    else:
+        st.markdown("## 📤 Export Apogée — format (Numéro + modules en triplets Note/Barème/Résultat)")
+
+        c1, c2, c3, c4 = st.columns([1, 2, 2, 1])
+
+        annee = c1.text_input("Année (ex: 2025)", key="exp_annee").strip()
+        ident = c2.text_input("Apogée ou CIN (optionnel)", key="exp_ident").strip().upper()
+        filiere = c3.text_input("Filière (LIKE) ex: FLPC% (vide => FL%)", key="exp_filiere").strip().upper()
+        session = c4.selectbox("Session", ["Toutes", "1", "2"], index=0)
+
+        if not filiere:
+            filiere = "FL%"
+
+        p_ses = None if session == "Toutes" else int(session)
+
+        if st.button("🔎 Générer export", type="primary"):
+            if not annee.isdigit():
+                st.warning("Année invalide.")
+            else:
+                binds = {
+                    "p_annee": int(annee),
+                    "p_filiere": filiere,
+                    "p_ident": ident if ident else None,
+                    "p_ses": p_ses
+                }
+
+                try:
+                    df_long = run_query_df(st.session_state["pool"], SQL_EXPORT_APOGEE_LIKE, binds)
+
+                    if df_long.empty:
+                        st.info("Aucun résultat.")
+                        st.session_state.pop("df_export_apogee", None)
+                    else:
+                        # ---- pivot comme export Apogée (triplets)
+                        base_cols = ["NUMERO", "NOM", "PRENOM", "NAISSANCE"]
+
+                        # On crée une colonne “clé module” (comme dans ton fichier : code module)
+                        df_long["MODULE"] = df_long["COD_ELP"].astype(str)
+
+                        # Pivot NOTE
+                        p_note = df_long.pivot_table(
+                            index=base_cols, columns="MODULE", values="NOTE", aggfunc="first"
+                        )
+                        p_note.columns = [f"{m} NOTE" for m in p_note.columns]
+
+                        # Pivot BAREME
+                        p_bar = df_long.pivot_table(
+                            index=base_cols, columns="MODULE", values="BAREME", aggfunc="first"
+                        )
+                        p_bar.columns = [f"{m} BAREME" for m in p_bar.columns]
+
+                        # Pivot RESULTAT
+                        p_res = df_long.pivot_table(
+                            index=base_cols, columns="MODULE", values="RESULTAT", aggfunc="first"
+                        )
+                        p_res.columns = [f"{m} RESULTAT" for m in p_res.columns]
+
+                        df_wide = pd.concat([p_note, p_bar, p_res], axis=1).reset_index()
+
+                        # ---- IMPORTANT : ordre des colonnes = Note/Barème/Résultat par module
+                        # On reconstruit l'ordre : pour chaque module : NOTE, BAREME, RESULTAT
+                        modules = sorted(df_long["MODULE"].unique().tolist())
+                        ordered_cols = base_cols.copy()
+                        for m in modules:
+                            ordered_cols += [f"{m} NOTE", f"{m} BAREME", f"{m} RESULTAT"]
+
+                        # Certaines colonnes peuvent manquer si module absent => on garde celles existantes
+                        ordered_cols = [c for c in ordered_cols if c in df_wide.columns]
+                        df_wide = df_wide[ordered_cols]
+
+                        st.session_state["df_export_apogee"] = df_wide
+                        st.success(f"Export prêt ✅ ({len(df_wide)} étudiants)")
+
+                except Exception as e:
+                    st.error(f"Erreur Oracle : {e}")
+
+        if "df_export_apogee" in st.session_state:
+            df = st.session_state["df_export_apogee"].copy()
+
+            st.markdown("### 📌 Aperçu (format Apogée)")
+            st.dataframe(df, use_container_width=True, hide_index=True, height=600)
+
+            st.markdown("### ⬇️ Télécharger")
+            buf = io.StringIO()
+            df.to_csv(
+                buf,
+                index=False,
+                sep=";",
+                encoding="utf-8",
+                na_rep="",
+                quoting=csv.QUOTE_ALL,
+                lineterminator="\n"
+            )
+
+            st.download_button(
+                "⬇️ Télécharger CSV UTF-8",
+                data=buf.getvalue().encode("utf-8"),
+                file_name=f"export_apogee_like_{annee}_{filiere.replace('%','')}.csv",
                 mime="text/csv"
             )
 
