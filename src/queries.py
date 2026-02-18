@@ -198,6 +198,35 @@ WHERE
 
 ORDER BY ind.COD_ETU, re.COD_ELP
 """
+SQL_SEMESTRES_MODULES_CREDITS = """
+SELECT DISTINCT
+    'S' || SUBSTR(ep.COD_ELP, 5, 1)                 AS SEMESTRE,
+    ep.COD_ELP                                      AS COD_ELP,
+    REGEXP_REPLACE(ep.LIB_ELP, '[[:cntrl:]]', ' ')  AS LIB_ELP,
+    ep.NBR_PNT_ECT_ELP                              AS CREDITS
+FROM ELEMENT_PEDAGOGI ep
+WHERE
+    ep.COD_NEL LIKE 'MO%'
+    AND ep.COD_ELP LIKE :p_filiere
+ORDER BY
+    SEMESTRE, COD_ELP
+"""
+
+SQL_UPDATE_CREDIT_MODULE = """
+UPDATE ELEMENT_PEDAGOGI
+SET NBR_PNT_ECT_ELP = :p_credits
+WHERE COD_ELP = :p_cod_elp
+"""
+
+SQL_INSERT_MODULE_MINI = """
+INSERT INTO ELEMENT_PEDAGOGI (COD_ELP, LIB_ELP, COD_NEL, NBR_PNT_ECT_ELP)
+VALUES (:p_cod_elp, :p_lib_elp, 'MO', :p_credits)
+"""
+
+SQL_DELETE_MODULE = """
+DELETE FROM ELEMENT_PEDAGOGI
+WHERE COD_ELP = :p_cod_elp
+"""
 
 
 

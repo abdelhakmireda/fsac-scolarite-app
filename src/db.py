@@ -69,3 +69,20 @@ def build_ident_filter(valeur: str, table_alias: str):
     if v.isdigit():
         return f"{table_alias}.COD_ETU = :code_etu", {"code_etu": int(v)}
     return f"UPPER({table_alias}.CIN_IND) = :cin", {"cin": v}
+def run_exec(pool, sql: str, binds: dict | None = None) -> int:
+    """
+    INSERT / UPDATE / DELETE + commit.
+    Retourne rowcount.
+    """
+    binds = binds or {}
+    with pool.acquire() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, binds)
+            conn.commit()
+            return cur.rowcount
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass

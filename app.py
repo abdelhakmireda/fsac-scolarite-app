@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 import io
 import csv
+import math
 
-from src.db import init_oracle_client, create_pool, close_pool, run_query_df, build_ident_filter
+from src.db import init_oracle_client, create_pool, close_pool, run_query_df, run_exec, build_ident_filter
 from src.ui import ensure_state, load_file_b64, apply_css, navbar, sidebar, touch_stats
-from src.queries import SQL_PARCOURS_TEMPLATE, SQL_INSCRIPTION_TEMPLATE, SQL_ABI_TEMPLATE,SQL_ARCHIVE_TEMPLATE, SQL_EXPORT_APOGEE_LIKE
+from src.queries import SQL_PARCOURS_TEMPLATE, SQL_INSCRIPTION_TEMPLATE, SQL_ABI_TEMPLATE,SQL_ARCHIVE_TEMPLATE, SQL_EXPORT_APOGEE_LIKE,SQL_SEMESTRES_MODULES_CREDITS,SQL_UPDATE_CREDIT_MODULE
 from src.config import LOGO_PATH
 
 # ==============================
@@ -586,6 +587,299 @@ elif page == "Export Notes":
                 file_name=f"export_apogee_like_{annee}_{filiere.replace('%','')}.csv",
                 mime="text/csv"
             )
+elif page == "Crédits Modules":
+    if not logged:
+        st.warning("Veuillez vous connecter.")
+    else:
+        st.markdown("## 📚 Semestres → Modules → Crédits (édition)")
+
+        # ==========================
+        # État
+        # ==========================
+        if "df_credits_modules" not in st.session_state:
+            st.session_state["df_credits_modules"] = None
+        if "open_add_modal" not in st.session_state:
+            st.session_state["open_add_modal"] = False
+
+        # ==========================
+        # Helpers
+        # ==========================
+        def norm_credit(x):
+            """Retourne float ou None (gère None/NaN/''/'3,5')."""
+            if x is None:
+                return None
+            try:
+                # NaN pandas
+                if pd.isna(x):
+                    return None
+            except Exception:
+                pass
+
+            s = str(x).strip()
+            if s == "" or s.lower() in ("nan", "none"):
+                return None
+            s = s.replace(",", ".")
+            try:
+                return float(s)
+            except Exception:
+                return None
+
+        def compute_semestre_from_cod(cod_elp: str) -> str:
+            """
+            Semestre à partir du code module (ex: FLPC S1 -> caractère position 5)
+            Adapte si ton format diffère.
+            """
+            cod_elp = (cod_elp or "").strip().upper()
+            if len(cod_elp) >= 5 and cod_elp[4].isdigit():
+                return "S" + cod_elp[4]
+            return "S?"
+
+        # ==========================
+        # Inputs
+        # ==========================
+        c1, c2, c3 = st.columns([2, 1, 1])
+        filiere = c1.text_input("Filière (LIKE) ex: FLPC% (vide => FL%)", key="cred_filiere").strip().upper()
+        if not filiere:
+            filiere = "FL%"
+
+        mode = c2.selectbox("Mode", ["Oracle (sauvegarde)", "Local (sans sauvegarde)"], index=0)
+        editable = c3.checkbox("Activer édition", value=True)
+
+        # ==========================
+        # Charger depuis Oracle
+        # ==========================
+        if st.button("🔎 Charger modules/crédits", type="primary"):
+            try:
+                df = run_query_df(
+                    st.session_state["pool"],
+                    SQL_SEMESTRES_MODULES_CREDITS,
+                    {"p_filiere": filiere}
+                )
+                if df.empty:
+                    st.session_state["df_credits_modules"] = None
+                    st.info("Aucun module trouvé.")
+                else:
+                    # normaliser types
+                    if "CREDITS" in df.columns:
+                        df["CREDITS"] = df["CREDITS"].apply(norm_credit)
+                    st.session_state["df_credits_modules"] = df
+                    st.success(f"{len(df)} module(s) chargés ✅")
+            except Exception as e:
+                st.error(f"Erreur Oracle : {e}")
+
+        df0 = st.session_state.get("df_credits_modules")
+
+        # ==========================
+        # Zone d'ajout (popup modal)
+        # ==========================
+        if df0 is not None:
+            st.markdown("---")
+            colA, colB = st.columns([1, 4])
+            if colA.button("➕ Ajouter un module"):
+                st.session_state["open_add_modal"] = True
+
+            if st.session_state.get("open_add_modal"):
+                with st.modal("➕ Ajouter un module (MO)"):
+                    cod = st.text_input("COD_ELP (ex: FLPC...)", key="add_cod_elp").strip().upper()
+                    lib = st.text_input("LIB_ELP (nom du module)", key="add_lib_elp").strip()
+
+                    # ✅ popup crédits (choix rapide)
+                    p1, p2 = st.columns([2, 2])
+                    credits_preset = p1.selectbox(
+                        "Crédits (valeurs rapides)",
+                        [0.0, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0],
+                        index=6
+                    )
+                    credits = p2.number_input("Ou saisir manuellement", min_value=0.0, value=float(credits_preset), step=0.5)
+
+                    c1m, c2m = st.columns(2)
+                    if c1m.button("✅ Enregistrer"):
+                        if not cod or not lib:
+                            st.warning("COD_ELP et LIB_ELP sont obligatoires.")
+                        else:
+                            sem = compute_semestre_from_cod(cod)
+
+                            if mode.startswith("Oracle"):
+                                try:
+                                    run_exec(
+                                        st.session_state["pool"],
+                                        SQL_INSERT_MODULE_MINI,
+                                        {
+                                            "p_cod_elp": cod,
+                                            "p_lib_elp": lib,
+                                            "p_credits": float(credits),
+                                            # si ton insert a besoin du semestre, ajoute le bind ici
+                                        }
+                                    )
+                                    st.success("Module ajouté ✅")
+                                except Exception as e:
+                                    st.error(f"Erreur Oracle (insert) : {e}")
+                                    st.stop()
+
+                                # reload oracle
+                                df = run_query_df(
+                                    st.session_state["pool"],
+                                    SQL_SEMESTRES_MODULES_CREDITS,
+                                    {"p_filiere": filiere}
+                                )
+                                if "CREDITS" in df.columns:
+                                    df["CREDITS"] = df["CREDITS"].apply(norm_credit)
+                                st.session_state["df_credits_modules"] = df
+                            else:
+                                # local add
+                                df = st.session_state["df_credits_modules"].copy()
+                                df.loc[len(df)] = [sem, cod, lib, float(credits)]
+                                st.session_state["df_credits_modules"] = df
+
+                            st.session_state["open_add_modal"] = False
+                            st.rerun()
+
+                    if c2m.button("❌ Fermer"):
+                        st.session_state["open_add_modal"] = False
+                        st.rerun()
+
+        # ==========================
+        # Affichage + édition (grid)
+        # ==========================
+        if df0 is not None:
+            df = df0.copy()
+
+            st.markdown("### ✏️ Édition des crédits")
+            st.caption("Modifie la colonne **CREDITS** puis clique sur **Sauvegarder**.")
+
+            # ✅ grid: CREDITS required => évite None
+            edited = st.data_editor(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=not editable,
+                column_config={
+                    "SEMESTRE": st.column_config.TextColumn("Semestre", disabled=True),
+                    "COD_ELP": st.column_config.TextColumn("Code module", disabled=True),
+                    "LIB_ELP": st.column_config.TextColumn("Nom module", disabled=True),
+                    "CREDITS": st.column_config.NumberColumn("Crédits", min_value=0.0, step=0.5, required=False),
+                },
+                key="grid_credits"
+            )
+
+            # normaliser après édition (si user vide une cellule)
+            if "CREDITS" in edited.columns:
+                edited["CREDITS"] = edited["CREDITS"].apply(norm_credit)
+
+            # ==========================
+            # Suppression
+            # ==========================
+            st.markdown("### 🗑️ Supprimer un module")
+            cod_to_delete = st.text_input("COD_ELP à supprimer (optionnel)", key="del_cod").strip().upper()
+
+            if st.button("🗑️ Supprimer", disabled=(not cod_to_delete)):
+                if mode.startswith("Oracle"):
+                    try:
+                        run_exec(
+                            st.session_state["pool"],
+                            SQL_DELETE_MODULE,
+                            {"p_cod_elp": cod_to_delete}
+                        )
+                        st.success("Supprimé ✅")
+                    except Exception as e:
+                        st.error(f"Erreur Oracle (delete) : {e}")
+                        st.stop()
+
+                    df_reload = run_query_df(
+                        st.session_state["pool"],
+                        SQL_SEMESTRES_MODULES_CREDITS,
+                        {"p_filiere": filiere}
+                    )
+                    if "CREDITS" in df_reload.columns:
+                        df_reload["CREDITS"] = df_reload["CREDITS"].apply(norm_credit)
+                    st.session_state["df_credits_modules"] = df_reload
+                    st.rerun()
+                else:
+                    df_local = edited[edited["COD_ELP"].astype(str).str.upper() != cod_to_delete].copy()
+                    st.session_state["df_credits_modules"] = df_local
+                    st.success("Supprimé (local) ✅")
+                    st.rerun()
+
+            # ==========================
+            # Sauvegarde Oracle (diff only) — FIX NoneType
+            # ==========================
+            st.markdown("### 💾 Sauvegarde")
+            null_policy = st.selectbox(
+                "Si la cellule Crédits est vide…",
+                ["Ignorer (ne rien changer)", "Mettre à 0"],
+                index=0
+            )
+
+            if st.button("💾 Sauvegarder les crédits"):
+                if mode.startswith("Oracle"):
+                    try:
+                        base = df0.copy()
+                        new = edited.copy()
+
+                        base["CREDITS"] = base["CREDITS"].apply(norm_credit)
+                        new["CREDITS"] = new["CREDITS"].apply(norm_credit)
+
+                        base_map = {str(r["COD_ELP"]): r["CREDITS"] for _, r in base.iterrows()}
+
+                        changes = []
+                        for _, r in new.iterrows():
+                            cod = str(r["COD_ELP"])
+                            new_val = r["CREDITS"]
+                            old_val = base_map.get(cod)
+
+                            # politique sur valeurs vides
+                            if new_val is None:
+                                if null_policy == "Mettre à 0":
+                                    new_val = 0.0
+                                else:
+                                    continue  # ignorer
+
+                            if new_val != old_val:
+                                changes.append((cod, float(new_val)))
+
+                        if not changes:
+                            st.info("Aucune modification détectée.")
+                        else:
+                            for cod, cred in changes:
+                                run_exec(
+                                    st.session_state["pool"],
+                                    SQL_UPDATE_CREDIT_MODULE,
+                                    {"p_cod_elp": cod, "p_credits": cred}
+                                )
+
+                            df_reload = run_query_df(
+                                st.session_state["pool"],
+                                SQL_SEMESTRES_MODULES_CREDITS,
+                                {"p_filiere": filiere}
+                            )
+                            if "CREDITS" in df_reload.columns:
+                                df_reload["CREDITS"] = df_reload["CREDITS"].apply(norm_credit)
+
+                            st.session_state["df_credits_modules"] = df_reload
+                            st.success(f"{len(changes)} module(s) mis à jour ✅")
+                            st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Erreur Oracle (update) : {e}")
+                else:
+                    st.session_state["df_credits_modules"] = edited
+                    st.success("Sauvegardé en local ✅")
+
+            # ==========================
+            # Export CSV
+            # ==========================
+            st.markdown("### ⬇️ Export CSV")
+            buf = io.StringIO()
+            edited.to_csv(buf, index=False, sep=";", encoding="utf-8", quoting=csv.QUOTE_ALL, lineterminator="\n")
+            st.download_button(
+                "⬇️ Télécharger crédits_modules.csv",
+                data=buf.getvalue().encode("utf-8"),
+                file_name=f"credits_modules_{filiere.replace('%','')}.csv",
+                mime="text/csv"
+            )
+
+        else:
+            st.info("Clique sur **Charger modules/crédits** pour afficher la grille.")
 
 st.markdown("---")
 st.caption("© Faculté des Sciences Aïn Chock – Service Scolarité FSAC – Application interne")
