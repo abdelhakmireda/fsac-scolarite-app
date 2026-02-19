@@ -60,19 +60,20 @@ apply_css("styles/base.css", logo_b64)
 # ==============================
 if page == "Accueil":
     st.markdown("## 👋 Bienvenue")
-
+    
+    # ==============================
+    # FORMULAIRE DE CONNEXION (exactement comme avant)
+    # ==============================
     if not logged:
         st.markdown('<div style="max-width:560px;margin:0 auto;">', unsafe_allow_html=True)
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("<div class='card-title'>🔐 Connexion Oracle</div>", unsafe_allow_html=True)
         st.markdown("<div class='card-sub'>Saisis tes identifiants Oracle</div>", unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
-
         with st.form("login_form", clear_on_submit=False):
             user = st.text_input("👤 Utilisateur Oracle")
             password = st.text_input("🔒 Mot de passe", type="password")
             ok = st.form_submit_button("Connexion", use_container_width=True)
-
         if ok:
             try:
                 pool = create_pool(user, password)
@@ -83,10 +84,13 @@ if page == "Accueil":
                 st.rerun()
             except Exception as e:
                 st.error(f"Erreur de connexion : {e}")
-
         st.markdown("</div></div>", unsafe_allow_html=True)
-
+    
     st.markdown("---")
+    
+    # ==============================
+    # FONCTIONNALITÉS (comme avant)
+    # ==============================
     st.markdown(
         """
 **Fonctionnalités :**
@@ -96,7 +100,43 @@ if page == "Accueil":
 - 📊 Dashboard (cartes + stats d’usage)
 """
     )
+    
+    # ==============================
+    # NOUVEAU : DIAGNOSTIC PRIVILÈGES (visible seulement quand connecté)
+    # ==============================
+    if logged:
+        st.markdown("---")
+        st.markdown("### 🔍 Mes privilèges Oracle (compte connecté)")
+        st.caption(f"Utilisateur : **{oracle_user}**")
+        
+        if st.button("🔄 Rafraîchir mes privilèges maintenant", type="primary", use_container_width=True):
+            with st.spinner("Récupération des privilèges en cours..."):
+                try:
+                    queries = {
+                        "1. Utilisateur connecté": "SELECT USER AS \"Utilisateur\" FROM DUAL",
+                        "2. Privilèges système": "SELECT PRIVILEGE FROM SESSION_PRIVS ORDER BY PRIVILEGE",
+                        "3. Privilèges sur ELEMENT_PEDAGOGI": """
+                            SELECT PRIVILEGE, GRANTABLE, GRANTOR 
+                            FROM USER_TAB_PRIVS 
+                            WHERE TABLE_NAME = 'ELEMENT_PEDAGOGI'
+                        """,
+                        "4. Tous mes privilèges objet": "SELECT TABLE_NAME, PRIVILEGE FROM USER_TAB_PRIVS ORDER BY TABLE_NAME",
+                        "5. Mes rôles": "SELECT ROLE FROM USER_ROLE_PRIVS ORDER BY ROLE"
+                    }
 
+                    for title, sql in queries.items():
+                        df = run_query_df(st.session_state["pool"], sql, {})
+                        if not df.empty:
+                            st.markdown(f"**{title}**")
+                            st.dataframe(df, use_container_width=True, hide_index=True)
+                            st.markdown("---")
+                        else:
+                            st.info(f"{title} → aucun résultat")
+
+                    st.success("✅ Diagnostic terminé ! Cherche surtout la ligne **UPDATE** sur **ELEMENT_PEDAGOGI**")
+                    
+                except Exception as e:
+                    st.error(f"Erreur lors du diagnostic : {e}")
 elif page == "Dashboard":
     if not logged:
         st.warning("Veuillez vous connecter.")
